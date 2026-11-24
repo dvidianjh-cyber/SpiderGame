@@ -1,9 +1,11 @@
 package com.spidercards.app.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -139,16 +141,41 @@ private class BoardLayout(
         const val ASPECT = 1.4f
 
         // Overlaps, in card widths. UP leaves the rank and suit in the corner showing.
-        const val UP = 0.40f
-        const val DOWN = 0.12f
-        const val MIN_DOWN = 0.05f
+        const val UP = 0.50f
+        const val DOWN = 0.08f
+        const val MIN_DOWN = 0.035f
 
         /** Cards never shrink below this share of their full size, so they stay easy to tap. */
         const val MIN_SCALE = 0.55f
     }
 }
 
-private data class Placement(val card: Card, val x: Float, val y: Float, val z: Float)
+private data class Placement(val card: Card, val x: Float, val y: Float, val z: Float, val locked: Boolean = false)
+
+/** Remembers the last position seen, so a fresh deal can send its ten cards out one after another. */
+private class DealTracker {
+    private var lastState: GameState? = null
+    var delays: Map<Int, Int> = emptyMap()
+        private set
+
+    fun update(state: GameState) {
+        val last = lastState
+        if (last === state) return
+        delays = if (last != null && state.moves == last.moves + 1 &&
+            last.stock.size - state.stock.size == GameState.COLUMN_COUNT
+        ) {
+            val dealt = last.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
+            buildMap {
+                state.columns.forEachIndexed { c, column ->
+                    column.lastOrNull()?.takeIf { it.id in dealt }?.let { put(it.id, c) }
+                }
+            }
+        } else {
+            emptyMap()
+        }
+        lastState = state
+    }
+}
 
 private data class Drag(val column: Int, val index: Int, val delta: Offset)
 
@@ -212,11 +239,17 @@ fun Board(
                 add(Placement(card.copy(faceUp = false), at.x, at.y, 200f + i))
             }
             state.columns.forEachIndexed { c, column ->
+                // Face-up cards above the movable run at the bottom of a column are shaded grey.
+                var runStart = column.size
+                while (runStart > 0 && Spider.isMovableRun(column, runStart - 1)) runStart--
                 column.forEachIndexed { i, card ->
-                    add(Placement(card, layout.columnX(c), layout.columnY[c][i], 400f + i))
+                    add(Placement(card, layout.columnX(c), layout.columnY[c][i], 400f + i, locked = i < runStart))
                 }
             }
         }
+
+        val dealTracker = remember { DealTracker() }
+        dealTracker.update(state)
 
         val activeDrag = drag
         val draggedIds = activeDrag?.let { d ->
@@ -229,16 +262,28 @@ fun Board(
                 val dx = if (dragging) activeDrag!!.delta.x else 0f
                 val dy = if (dragging) activeDrag!!.delta.y else 0f
                 val target = IntOffset((p.x + dx).roundToInt(), (p.y + dy).roundToInt())
+                val dealOrder = dealTracker.delays[p.card.id]
                 val position by animateIntOffsetAsState(
                     targetValue = target,
-                    animationSpec = if (dragging) snap() else spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
-                    ),
+                    animationSpec = when {
+                        dragging -> snap()
+                        dealOrder != null -> tween(
+                            durationMillis = 200,
+                            delayMillis = dealOrder * 60,
+                            easing = FastOutSlowInEasing,
+                        )
+                        else -> spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        )
+                    },
                     label = "card",
                 )
+                // A dealt card stays face down until it lands.
+                val inFlight = dealOrder != null && position != target
                 CardFace(
-                    card = p.card,
+                    card = if (inFlight) p.card.copy(faceUp = false) else p.card,
+                    locked = p.locked,
                     width = cardWidthDp,
                     fontScale = fontScale,
                     highlighted = dragging,
