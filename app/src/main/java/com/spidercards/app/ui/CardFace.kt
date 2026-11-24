@@ -3,7 +3,6 @@ package com.spidercards.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,7 +62,7 @@ fun CardFace(card: Card, width: Dp, fontScale: Float, modifier: Modifier = Modif
     }
     val color = if (card.suit.isRed) CardColors.red else CardColors.black
     // Sizes in sp derived from the card width, undoing the user's font scale so cards never overflow.
-    val corner = (width.value * 0.36f / fontScale).sp
+    val corner = (width.value * 0.34f / fontScale).sp
     val big = (width.value * 0.62f / fontScale).sp
     Box(
         modifier
@@ -71,10 +70,14 @@ fun CardFace(card: Card, width: Dp, fontScale: Float, modifier: Modifier = Modif
             .background(CardColors.face)
             .border(if (highlighted) 2.dp else 0.5.dp, if (highlighted) Color(0xFFFFC107) else CardColors.edge, shape),
     ) {
-        Column(Modifier.padding(start = width * 0.06f, top = width * 0.04f)) {
-            Text(card.rankLabel, style = cardTextStyle(corner, color), maxLines = 1, softWrap = false)
-            Text(card.suit.symbol, style = cardTextStyle(corner * 0.9f, color), maxLines = 1)
-        }
+        // Rank and suit on one line, so a heavily overlapped card still shows both.
+        Text(
+            card.rankLabel + card.suit.symbol,
+            style = cardTextStyle(corner, color).copy(letterSpacing = (-0.5).sp),
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.padding(start = width * 0.05f, top = width * 0.03f),
+        )
         Text(
             card.suit.symbol,
             style = cardTextStyle(big, color).copy(textAlign = TextAlign.Center),

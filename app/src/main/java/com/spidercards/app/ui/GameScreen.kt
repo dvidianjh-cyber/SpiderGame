@@ -4,11 +4,20 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.spidercards.app.GameViewModel
@@ -50,43 +58,51 @@ fun GameScreen(vm: GameViewModel) {
     }
 
     Box(Modifier.fillMaxSize().background(TableColors.felt)) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            StatusBar(
-                timeMs = vm.elapsedMs,
-                score = state.score,
-                moves = state.moves,
-                runs = state.foundations.size,
-            )
-            Board(
-                state = state,
-                onMove = { from, index, to -> vm.move(Move(from, index, to)) },
-                onTapCard = { column, index -> vm.autoMove(column, index) },
-                onDeal = vm::deal,
-                modifier = Modifier.weight(1f).padding(horizontal = 2.dp),
-            )
-            val hint = when {
-                vm.toast != null -> vm.toast
-                vm.outlook == Spider.Outlook.DEAL_NEEDED ->
-                    if (state.columns.any { it.isEmpty() }) {
-                        "No useful moves left. Fill the empty columns, then deal."
-                    } else {
-                        "No useful moves left. Tap the stock to deal."
-                    }
-                else -> null
+        val hint = when {
+            vm.toast != null -> vm.toast
+            vm.outlook == Spider.Outlook.DEAL_NEEDED ->
+                if (state.columns.any { it.isEmpty() }) {
+                    "No useful moves left. Fill the empty columns, then deal."
+                } else {
+                    "No useful moves left. Tap the stock to deal."
+                }
+            else -> null
+        }
+        val board = @Composable { modifier: Modifier ->
+            Box(modifier) {
+                Board(
+                    state = state,
+                    onMove = { from, index, to -> vm.move(Move(from, index, to)) },
+                    onTapCard = { column, index -> vm.autoMove(column, index) },
+                    onDeal = vm::deal,
+                )
+                if (hint != null) HintPill(hint, Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp))
             }
-            Text(
-                hint ?: "",
-                color = TableColors.accent,
-                fontSize = 13.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().height(20.dp),
-            )
-            ActionBar(
-                canUndo = vm.session.canUndo,
-                onNewGame = ::requestNewGame,
-                onUndo = vm::undo,
-                onStats = { showStats = true },
-            )
+        }
+        val controls = Controls(
+            timeMs = vm.elapsedMs,
+            score = state.score,
+            moves = state.moves,
+            runs = state.foundations.size,
+            canUndo = vm.session.canUndo,
+            onNewGame = ::requestNewGame,
+            onUndo = vm::undo,
+            onStats = { showStats = true },
+        )
+
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+            if (maxWidth > maxHeight) {
+                // Landscape: every bit of height goes to the cards; controls sit in a slim panel on the right.
+                Row(Modifier.fillMaxSize()) {
+                    board(Modifier.weight(1f).fillMaxHeight().padding(start = 2.dp))
+                    SidePanel(controls)
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    TopStrip(controls)
+                    board(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 2.dp))
+                }
+            }
         }
 
         if (showStats) {
@@ -147,49 +163,98 @@ fun GameScreen(vm: GameViewModel) {
     }
 }
 
+private class Controls(
+    val timeMs: Long,
+    val score: Int,
+    val moves: Int,
+    val runs: Int,
+    val canUndo: Boolean,
+    val onNewGame: () -> Unit,
+    val onUndo: () -> Unit,
+    val onStats: () -> Unit,
+)
+
+/** Landscape: a narrow column of stats and buttons down the right edge. */
 @Composable
-private fun StatusBar(timeMs: Long, score: Int, moves: Int, runs: Int) {
-    Row(
-        Modifier.fillMaxWidth().background(TableColors.feltDark).padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+private fun SidePanel(c: Controls) {
+    Column(
+        Modifier.fillMaxHeight().width(84.dp).background(TableColors.feltDark).padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        StatusItem("Time", formatTime(timeMs))
-        StatusItem("Score", score.toString())
-        StatusItem("Moves", moves.toString())
-        StatusItem("Runs", "$runs/8")
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(formatTime(c.timeMs), color = TableColors.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            SmallStat("Score", c.score.toString())
+            SmallStat("Moves", c.moves.toString())
+            SmallStat("Runs", "${c.runs}/8")
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            PanelButton("Undo", enabled = c.canUndo, onClick = c.onUndo)
+            PanelButton("New", onClick = c.onNewGame)
+            PanelButton("Stats", onClick = c.onStats)
+        }
     }
 }
 
+/** Portrait: one thin row with the numbers and buttons together. */
 @Composable
-private fun StatusItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, color = TableColors.dim, fontSize = 11.sp)
-        Text(value, color = TableColors.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun ActionBar(canUndo: Boolean, onNewGame: () -> Unit, onUndo: () -> Unit, onStats: () -> Unit) {
+private fun TopStrip(c: Controls) {
     Row(
-        Modifier.fillMaxWidth().background(TableColors.feltDark).padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+        Modifier.fillMaxWidth().background(TableColors.feltDark).padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        BarButton("New game", onClick = onNewGame)
-        BarButton("Undo", enabled = canUndo, onClick = onUndo)
-        BarButton("Stats", onClick = onStats)
+        Text(formatTime(c.timeMs), color = TableColors.text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        SmallStat("Score", c.score.toString())
+        SmallStat("Runs", "${c.runs}/8")
+        Spacer(Modifier.weight(1f))
+        PanelButton("Undo", enabled = c.canUndo, onClick = c.onUndo)
+        PanelButton("New", onClick = c.onNewGame)
+        PanelButton("Stats", onClick = c.onStats)
     }
 }
 
 @Composable
-private fun BarButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
-    TextButton(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(8.dp)) {
+private fun SmallStat(label: String, value: String) {
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = TableColors.dim, fontSize = 11.sp)) { append("$label ") }
+            withStyle(SpanStyle(color = TableColors.text, fontSize = 13.sp, fontWeight = FontWeight.Bold)) { append(value) }
+        },
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun PanelButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+        modifier = Modifier.heightIn(min = 36.dp),
+    ) {
         Text(
             label,
             color = if (enabled) TableColors.text else TableColors.dim.copy(alpha = 0.4f),
-            fontSize = 16.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
         )
     }
+}
+
+@Composable
+private fun HintPill(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = TableColors.feltDark,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = modifier
+            .zIndex(3000f)
+            .background(TableColors.accent, RoundedCornerShape(50))
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    )
 }
 
 fun formatTime(ms: Long): String {
