@@ -16,6 +16,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,7 +39,13 @@ private val dateFormat = DateTimeFormatter.ofPattern("d MMM yyyy")
 private fun LocalDate.pretty(): String = format(dateFormat)
 
 @Composable
-fun StatsScreen(stats: Stats, onClose: () -> Unit, onReset: () -> Unit) {
+fun StatsScreen(
+    stats: Stats,
+    winnableOnly: Boolean,
+    onWinnableOnlyChange: (Boolean) -> Unit,
+    onClose: () -> Unit,
+    onReset: () -> Unit,
+) {
     var confirmReset by remember { mutableStateOf(false) }
     Column(
         Modifier
@@ -52,7 +60,7 @@ fun StatsScreen(stats: Stats, onClose: () -> Unit, onReset: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Statistics",
+                "Stats and options",
                 color = TableColors.text,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
@@ -65,6 +73,20 @@ fun StatsScreen(stats: Stats, onClose: () -> Unit, onReset: () -> Unit) {
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            Panel("Options") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Winnable deals only", color = TableColors.text, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Muted("New games are checked by a solver first, so every deal can be won.")
+                    }
+                    Switch(
+                        checked = winnableOnly,
+                        onCheckedChange = onWinnableOnlyChange,
+                        colors = SwitchDefaults.colors(checkedTrackColor = TableColors.accent),
+                    )
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Played", stats.played.toString(), Modifier.weight(1f))
                 Tile("Won", stats.won.toString(), Modifier.weight(1f))

@@ -2,6 +2,7 @@ package com.spidercards.app
 
 import android.content.Context
 import spider.game.Codec
+import spider.game.GameState
 import spider.game.Session
 import spider.game.Stats
 import java.io.File
@@ -10,7 +11,19 @@ import java.io.File
 class Storage(context: Context) {
     private val sessionFile = File(context.filesDir, "session.txt")
     private val statsFile = File(context.filesDir, "stats.txt")
+    private val nextDealFile = File(context.filesDir, "next_deal.txt")
+    private val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val lock = Any()
+
+    fun loadWinnableOnly(): Boolean = settings.getBoolean("winnable_only", false)
+
+    fun saveWinnableOnly(on: Boolean) = settings.edit().putBoolean("winnable_only", on).apply()
+
+    fun loadNextDeal(): GameState? = read(nextDealFile)?.let { runCatching { Codec.decodeState(it.trim()) }.getOrNull() }
+
+    fun saveNextDeal(deal: GameState?) {
+        if (deal == null) synchronized(lock) { nextDealFile.delete() } else write(nextDealFile, Codec.encodeState(deal))
+    }
 
     fun loadSession(): Session? = read(sessionFile)?.let { Codec.decodeSession(it) }
 

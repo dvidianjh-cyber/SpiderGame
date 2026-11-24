@@ -2,13 +2,23 @@ package com.spidercards.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -75,6 +85,7 @@ fun GameScreen(vm: GameViewModel) {
                     onMove = { from, index, to -> vm.move(Move(from, index, to)) },
                     onTapCard = { column, index -> vm.autoMove(column, index) },
                     onDeal = vm::deal,
+                    hint = vm.hint?.action,
                 )
                 if (hint != null) HintPill(hint, Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp))
             }
@@ -85,8 +96,10 @@ fun GameScreen(vm: GameViewModel) {
             moves = state.moves,
             runs = state.foundations.size,
             canUndo = vm.session.canUndo,
+            thinking = vm.thinking,
             onNewGame = ::requestNewGame,
             onUndo = vm::undo,
+            onHint = vm::requestHint,
             onStats = { showStats = true },
         )
 
@@ -105,9 +118,28 @@ fun GameScreen(vm: GameViewModel) {
             }
         }
 
+        if (vm.findingDeal) {
+            Box(
+                Modifier.fillMaxSize().zIndex(4000f).background(Color(0x99000000))
+                    .clickable(remember { MutableInteractionSource() }, indication = null) {},
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(color = TableColors.accent)
+                    Text("Finding a winnable deal...", color = TableColors.text, fontSize = 16.sp)
+                }
+            }
+        }
+
         if (showStats) {
             BackHandler { showStats = false }
-            StatsScreen(stats = vm.stats, onClose = { showStats = false }, onReset = vm::resetStats)
+            StatsScreen(
+                stats = vm.stats,
+                winnableOnly = vm.winnableOnly,
+                onWinnableOnlyChange = vm::changeWinnableOnly,
+                onClose = { showStats = false },
+                onReset = vm::resetStats,
+            )
         }
     }
 
@@ -169,8 +201,10 @@ private class Controls(
     val moves: Int,
     val runs: Int,
     val canUndo: Boolean,
+    val thinking: Boolean,
     val onNewGame: () -> Unit,
     val onUndo: () -> Unit,
+    val onHint: () -> Unit,
     val onStats: () -> Unit,
 )
 
@@ -188,10 +222,8 @@ private fun SidePanel(c: Controls) {
             SmallStat("Moves", c.moves.toString())
             SmallStat("Runs", "${c.runs}/8")
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            PanelButton("Undo", enabled = c.canUndo, onClick = c.onUndo)
-            PanelButton("New", onClick = c.onNewGame)
-            PanelButton("Stats", onClick = c.onStats)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            ControlButtons(c)
         }
     }
 }
@@ -208,9 +240,7 @@ private fun TopStrip(c: Controls) {
         SmallStat("Score", c.score.toString())
         SmallStat("Runs", "${c.runs}/8")
         Spacer(Modifier.weight(1f))
-        PanelButton("Undo", enabled = c.canUndo, onClick = c.onUndo)
-        PanelButton("New", onClick = c.onNewGame)
-        PanelButton("Stats", onClick = c.onStats)
+        ControlButtons(c)
     }
 }
 
@@ -226,20 +256,26 @@ private fun SmallStat(label: String, value: String) {
 }
 
 @Composable
-private fun PanelButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-        modifier = Modifier.heightIn(min = 36.dp),
+private fun ControlButtons(c: Controls) {
+    PanelButton(Icons.AutoMirrored.Filled.Undo, "Undo", enabled = c.canUndo, onClick = c.onUndo)
+    PanelButton(Icons.Filled.Lightbulb, if (c.thinking) "..." else "Hint", enabled = !c.thinking, onClick = c.onHint)
+    PanelButton(Icons.Filled.Refresh, "New", onClick = c.onNewGame)
+    PanelButton(Icons.Filled.BarChart, "Stats", onClick = c.onStats)
+}
+
+/** An icon with a small caption underneath. */
+@Composable
+private fun PanelButton(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val color = if (enabled) TableColors.text else TableColors.dim.copy(alpha = 0.4f)
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            label,
-            color = if (enabled) TableColors.text else TableColors.dim.copy(alpha = 0.4f),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(26.dp))
+        Text(label, color = color, fontSize = 10.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 

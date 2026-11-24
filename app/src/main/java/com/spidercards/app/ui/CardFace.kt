@@ -137,9 +137,10 @@ fun CardBack(width: Dp, modifier: Modifier = Modifier) {
 
 /** The outline shown where a column, foundation or stock is empty. */
 @Composable
-fun EmptySlot(width: Dp, modifier: Modifier = Modifier) {
+fun EmptySlot(width: Dp, modifier: Modifier = Modifier, highlighted: Boolean = false) {
     val shape = cardShape(width)
-    Box(modifier.clip(shape).background(CardColors.slot).border(1.5.dp, CardColors.slotEdge, shape)) {
+    val edge = if (highlighted) Color(0xFFFFC107) else CardColors.slotEdge
+    Box(modifier.clip(shape).background(CardColors.slot).border(if (highlighted) 3.dp else 1.5.dp, edge, shape)) {
         Box(Modifier.fillMaxSize())
     }
 }

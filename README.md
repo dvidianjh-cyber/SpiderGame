@@ -13,6 +13,8 @@ Two-suit Spider Solitaire for Android. No ads, no internet permission, no tracki
 - **Tap** a card to send it (and the cards on top of it) to the best spot.
 - **Drag** a card to choose where it goes.
 - **Hold** any card to see its whole column spread out. Tapping a card that can't move does the same for a moment.
+- **Hint** (lightbulb) outlines the next move of a winning line when the solver finds one, or the most promising move if not.
+- **Winnable deals only** (on the Stats screen) makes every new game one the solver has proven can be won.
 - **Tap the stock** (bottom right) to deal a new row. Every column must have a card first.
 - A full King-to-Ace run in one suit is cleared automatically. Clear all 8 to win.
 

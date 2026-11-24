@@ -11,13 +11,20 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import spider.game.Action
 import spider.game.GameState
+import spider.game.Solver
 import spider.game.Move
 import spider.game.ScoreEntry
 import spider.game.Session
 import spider.game.Spider
 import spider.game.Stats
 import java.time.LocalDate
+
+/** The suggested next step, shown on the table. [winning] is true when it's the first step of a found win. */
+data class HintView(val action: Action, val winning: Boolean)
 
 /** Shown when a game is won. */
 data class WinSummary(
@@ -55,6 +62,24 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var toastJob: Job? = null
 
+    /** When on, new games are only dealt once the solver has proven them winnable. */
+    var winnableOnly by mutableStateOf(storage.loadWinnableOnly())
+        private set
+
+    /** True while the player waits for a winnable deal to be found. */
+    var findingDeal by mutableStateOf(false)
+        private set
+
+    /** A winnable deal found in the background, ready for the next new game. */
+    private var nextDeal: GameState? = storage.loadNextDeal()
+    private var dealJob: Job? = null
+
+    var hint by mutableStateOf<HintView?>(null)
+        private set
+    var thinking by mutableStateOf(false)
+        private set
+    private var hintJob: Job? = null
+
     private var resumed = false
     private var clockJob: Job? = null
     private var clockBase = 0L
@@ -89,11 +114,82 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun newGame() {
+        if (findingDeal) return
         win = null
         stuckDismissedAt = -1
         stopClock()
+        if (!winnableOnly) {
+            startGame(Spider.newGame())
+            return
+        }
+        val ready = nextDeal
+        if (ready != null) {
+            nextDeal = null
+            storage.saveNextDeal(null)
+            startGame(ready)
+        } else {
+            // Nothing prepared yet: wait for the background search, which usually takes a second or two.
+            findingDeal = true
+            prepareNextDeal()
+        }
+    }
+
+    private fun startGame(deal: GameState) {
         elapsedMs = 0
-        apply(Session.new(), countStart = false)
+        apply(Session(deal), countStart = false)
+        prepareNextDeal()
+    }
+
+    fun changeWinnableOnly(on: Boolean) {
+        winnableOnly = on
+        storage.saveWinnableOnly(on)
+        if (on) prepareNextDeal() else dealJob?.cancel()
+    }
+
+    /** Finds the next winnable deal in the background, so New game is instant when the time comes. */
+    private fun prepareNextDeal() {
+        if (!winnableOnly || nextDeal != null || dealJob?.isActive == true) return
+        dealJob = viewModelScope.launch {
+            val deal = withContext(Dispatchers.Default) {
+                Solver.winnableDeal { !isActive }
+            } ?: return@launch
+            if (findingDeal) {
+                findingDeal = false
+                startGame(deal)
+            } else {
+                nextDeal = deal
+                withContext(Dispatchers.IO) { storage.saveNextDeal(deal) }
+            }
+        }
+    }
+
+    /** Looks for a winning line from here and shows its first step, or the most promising move if none is found. */
+    fun requestHint() {
+        if (thinking || state.isWon) return
+        val position = state
+        thinking = true
+        hintJob = viewModelScope.launch {
+            val found = withContext(Dispatchers.Default) {
+                val solver = Solver(nodeLimit = HINT_NODE_LIMIT)
+                val solution = solver.solve(position) { !isActive }
+                ensureActive()
+                when {
+                    solution != null -> HintView(solution.first(), winning = true)
+                    else -> solver.candidateMoves(position).firstOrNull()?.let { HintView(Action.MoveCards(it), false) }
+                        ?: if (Spider.canDeal(position)) HintView(Action.Deal, false) else null
+                }
+            }
+            thinking = false
+            if (state !== position) return@launch
+            if (found == null) {
+                showToast("No moves left from here. Try undo.")
+                return@launch
+            }
+            hint = found
+            if (!found.winning) showToast("No sure win found from here, but this looks best.")
+            delay(HINT_SHOW_MS)
+            if (hint == found) hint = null
+        }
     }
 
     fun resetStats() {
@@ -109,6 +205,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun apply(next: Session, countStart: Boolean = true) {
+        hintJob?.cancel()
+        hint = null
+        thinking = false
         if (countStart && !session.started && next.started) {
             updateStats(stats.recordStarted())
         }
@@ -140,6 +239,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     fun onResume() {
         resumed = true
         ensureClock()
+        prepareNextDeal()
     }
 
     fun onPause() {
@@ -177,5 +277,10 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             delay(2500)
             toast = null
         }
+    }
+
+    companion object {
+        const val HINT_NODE_LIMIT = 60_000
+        const val HINT_SHOW_MS = 3000L
     }
 }
