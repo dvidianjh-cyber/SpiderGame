@@ -40,8 +40,8 @@ import spider.game.Move
 import spider.game.Spider
 
 object TableColors {
-    val felt = Color(0xFF1F6B3A)
-    val feltDark = Color(0xFF15502A)
+    val felt = Color(0xFF237A35)
+    val feltDark = Color(0xFF175A26)
     val text = Color(0xFFF1F5EE)
     val dim = Color(0xFFB9D3BF)
     val accent = Color(0xFFFFC107)
