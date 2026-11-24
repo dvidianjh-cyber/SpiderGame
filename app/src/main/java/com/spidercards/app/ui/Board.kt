@@ -272,6 +272,17 @@ fun Board(
         val currentOnTap by rememberUpdatedState(onTapCard)
         val currentOnDeal by rememberUpdatedState(onDeal)
 
+        // Cards (and possibly an empty column) to outline for the current hint.
+        val hintMove = (hint as? Action.MoveCards)?.move
+        val hintedIds: Set<Int> = when (hint) {
+            is Action.MoveCards -> buildSet {
+                state.columns.getOrNull(hint.move.from)?.drop(hint.move.index)?.forEach { add(it.id) }
+                state.columns.getOrNull(hint.move.to)?.lastOrNull()?.let { add(it.id) }
+            }
+            Action.Deal -> state.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
+            null -> emptySet()
+        }
+
         // Empty slots: under every column, each foundation, and the stock.
         for (c in 0 until GameState.COLUMN_COUNT) {
             EmptySlot(
@@ -318,17 +329,6 @@ fun Board(
                     add(Placement(card, layout.columnX(c), layout.columnY[c][i], 400f + i, i < runStart, c, i))
                 }
             }
-        }
-
-        // Cards (and possibly an empty column) to outline for the current hint.
-        val hintMove = (hint as? Action.MoveCards)?.move
-        val hintedIds: Set<Int> = when (hint) {
-            is Action.MoveCards -> buildSet {
-                state.columns.getOrNull(hint.move.from)?.drop(hint.move.index)?.forEach { add(it.id) }
-                state.columns.getOrNull(hint.move.to)?.lastOrNull()?.let { add(it.id) }
-            }
-            Action.Deal -> state.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
-            null -> emptySet()
         }
 
         val planner = remember { FlightPlanner() }
