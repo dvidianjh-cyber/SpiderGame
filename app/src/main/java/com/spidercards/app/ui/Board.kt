@@ -29,31 +29,56 @@ import spider.game.GameState
 import spider.game.Spider
 import kotlin.math.roundToInt
 
-/** Where everything sits on screen, in pixels. Rebuilt whenever the state or screen size changes. */
+private fun Offset.round() = IntOffset(x.roundToInt(), y.roundToInt())
+
+/**
+ * Where everything sits on screen, in pixels. Rebuilt whenever the state or screen size changes.
+ *
+ * Landscape keeps all the height for the tableau: completed runs and the stock go in a strip on the right.
+ * Portrait puts them in a row along the bottom. In both, cards shrink as columns grow so that every
+ * card's rank stays readable, and only if that isn't enough do the overlaps squeeze further.
+ */
 private class BoardLayout(
     val state: GameState,
     width: Float,
     height: Float,
 ) {
-    val columnWidth = width / GameState.COLUMN_COUNT
+    val landscape = width > height
+    val columnWidth = width / (GameState.COLUMN_COUNT + if (landscape) 1 else 0)
     val gap = columnWidth * 0.05f
-    val cardWidth = columnWidth - gap * 2
-    val cardHeight = cardWidth * 1.42f
+    private val maxCardWidth = columnWidth - gap * 2
     val top = gap * 2
 
-    // Completed runs (left) and the stock (right) sit along the bottom edge.
-    val bottomY = height - cardHeight - gap * 2
-    private val tableauHeight = bottomY - top - gap * 2
+    val cardWidth: Float
+    val cardHeight: Float
+    private val tableauBottom: Float
 
-    /** Card tops for each column, squeezed so tall columns still fit above the bottom row. */
+    init {
+        // Room for the tableau, using the biggest card size to reserve the portrait bottom row.
+        val available = if (landscape) height - top - gap else height - top - maxCardWidth * ASPECT - gap * 4
+        // The tallest column in card widths, at the ideal overlaps.
+        val tallest = state.columns.maxOf { column ->
+            ASPECT + column.dropLast(1).sumOf { (if (it.faceUp) UP else DOWN).toDouble() }.toFloat()
+        }
+        cardWidth = (available / tallest).coerceIn(maxCardWidth * MIN_SCALE, maxCardWidth)
+        cardHeight = cardWidth * ASPECT
+        tableauBottom = if (landscape) height - gap else height - cardHeight - gap * 3
+    }
+
+    /** Card tops for each column. Hidden cards are squeezed first, then visible ones if still needed. */
     val columnY: List<List<Float>> = state.columns.map { column ->
-        var down = cardHeight * 0.11f
-        var up = cardHeight * 0.30f
-        val steps = column.dropLast(1).sumOf { (if (it.faceUp) up else down).toDouble() }.toFloat()
-        if (column.isNotEmpty() && cardHeight + steps > tableauHeight && steps > 0f) {
-            val scale = ((tableauHeight - cardHeight) / steps).coerceAtLeast(0.05f)
-            down *= scale
-            up *= scale
+        val room = tableauBottom - top - cardHeight
+        val hidden = column.dropLast(1).count { !it.faceUp }
+        val shown = column.size - 1 - hidden
+        var down = cardWidth * DOWN
+        var up = cardWidth * UP
+        if (hidden * down + shown * up > room) {
+            down = cardWidth * MIN_DOWN
+            if (hidden * down + shown * up > room) {
+                up = if (shown > 0) ((room - hidden * down) / shown).coerceAtLeast(cardWidth * 0.08f) else up
+            } else {
+                down = if (hidden > 0) ((room - shown * up) / hidden).coerceIn(cardWidth * MIN_DOWN, cardWidth * DOWN) else down
+            }
         }
         var y = top
         column.map { card ->
@@ -65,27 +90,61 @@ private class BoardLayout(
 
     fun columnX(column: Int) = column * columnWidth + gap
 
-    fun foundationX(index: Int) = gap + index * columnWidth * 0.55f
+    // Landscape: the right-hand strip. Portrait: the bottom row.
+    private val sideX = GameState.COLUMN_COUNT * columnWidth + gap
+    private val bottomRowY = height - cardHeight - gap
 
-    /** The stock shows one small pile per deal left, fanned leftwards from the right edge. */
-    fun stockX(pile: Int, piles: Int) = columnX(GameState.COLUMN_COUNT - 1) - (piles - 1 - pile) * columnWidth * 0.3f
+    private val stockStep = if (landscape) cardHeight * 0.12f else columnWidth * 0.3f
 
-    fun stockLeft() = stockX(0, maxOf(state.dealsLeft, 1))
+    fun foundationPosition(index: Int): Offset = if (landscape) {
+        val stockTop = bottomRowY - (GameState.RUNS_TO_WIN / 2) * stockStep
+        val step = ((stockTop - gap * 2 - cardHeight - top) / (GameState.RUNS_TO_WIN - 1))
+            .coerceIn(cardHeight * 0.05f, cardHeight * 0.2f)
+        Offset(sideX, top + index * step)
+    } else {
+        Offset(gap + index * columnWidth * 0.55f, bottomRowY)
+    }
 
-    fun isOnStock(point: Offset) =
-        point.y >= bottomY && point.x >= stockLeft() && point.x <= columnX(GameState.COLUMN_COUNT - 1) + cardWidth
+    /** The stock shows one small pile per deal left. */
+    fun stockPosition(pile: Int, piles: Int): Offset {
+        val back = (piles - 1 - pile).coerceAtLeast(0)
+        return if (landscape) {
+            Offset(sideX, bottomRowY - back * stockStep)
+        } else {
+            Offset(columnX(GameState.COLUMN_COUNT - 1) - back * stockStep, bottomRowY)
+        }
+    }
+
+    fun isOnStock(point: Offset): Boolean {
+        val first = stockPosition(0, maxOf(state.dealsLeft, 1))
+        val last = stockPosition(0, 1)
+        return point.x >= first.x && point.x <= last.x + cardWidth &&
+            point.y >= first.y && point.y <= last.y + cardHeight
+    }
 
     fun columnAt(x: Float): Int = (x / columnWidth).toInt().coerceIn(0, GameState.COLUMN_COUNT - 1)
 
     /** The card under [point] as (column, index), or null when the touch misses every card. */
     fun cardAt(point: Offset): Pair<Int, Int>? {
-        if (point.y >= bottomY) return null
+        if (point.x >= GameState.COLUMN_COUNT * columnWidth || point.y > tableauBottom) return null
         val column = columnAt(point.x)
         val ys = columnY[column]
         for (i in ys.indices.reversed()) {
             if (point.y >= ys[i] && point.y <= ys[i] + cardHeight) return column to i
         }
         return null
+    }
+
+    companion object {
+        const val ASPECT = 1.4f
+
+        // Overlaps, in card widths. UP leaves the rank and suit in the corner showing.
+        const val UP = 0.40f
+        const val DOWN = 0.12f
+        const val MIN_DOWN = 0.05f
+
+        /** Cards never shrink below this share of their full size, so they stay easy to tap. */
+        const val MIN_SCALE = 0.55f
     }
 }
 
@@ -127,16 +186,14 @@ fun Board(
         for (f in 0 until GameState.RUNS_TO_WIN) {
             EmptySlot(
                 cardWidthDp,
-                Modifier.offset { IntOffset(layout.foundationX(f).roundToInt(), layout.bottomY.roundToInt()) }
+                Modifier.offset { layout.foundationPosition(f).round() }
                     .size(cardWidthDp, cardHeightDp),
             )
         }
         if (state.stock.isEmpty()) {
             EmptySlot(
                 cardWidthDp,
-                Modifier.offset {
-                    IntOffset(layout.columnX(GameState.COLUMN_COUNT - 1).roundToInt(), layout.bottomY.roundToInt())
-                }.size(cardWidthDp, cardHeightDp),
+                Modifier.offset { layout.stockPosition(0, 1).round() }.size(cardWidthDp, cardHeightDp),
             )
         }
 
@@ -144,13 +201,15 @@ fun Board(
         val placements = buildList {
             state.foundations.forEachIndexed { f, run ->
                 run.forEachIndexed { i, card ->
-                    add(Placement(card.copy(faceUp = true), layout.foundationX(f), layout.bottomY, f * 20f + i))
+                    val at = layout.foundationPosition(f)
+                    add(Placement(card.copy(faceUp = true), at.x, at.y, f * 20f + i))
                 }
             }
             val piles = state.dealsLeft
             state.stock.forEachIndexed { i, card ->
                 val pile = (i / GameState.COLUMN_COUNT).coerceAtMost(maxOf(piles - 1, 0))
-                add(Placement(card.copy(faceUp = false), layout.stockX(pile, piles), layout.bottomY, 200f + i))
+                val at = layout.stockPosition(pile, piles)
+                add(Placement(card.copy(faceUp = false), at.x, at.y, 200f + i))
             }
             state.columns.forEachIndexed { c, column ->
                 column.forEachIndexed { i, card ->
