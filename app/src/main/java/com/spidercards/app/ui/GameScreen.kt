@@ -136,7 +136,7 @@ fun GameScreen(vm: GameViewModel) {
             StatsScreen(
                 stats = vm.stats,
                 winnableOnly = vm.winnableOnly,
-                onWinnableOnlyChange = vm::setWinnableOnly,
+                onWinnableOnlyChange = vm::changeWinnableOnly,
                 onClose = { showStats = false },
                 onReset = vm::resetStats,
             )

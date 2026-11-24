@@ -140,7 +140,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         prepareNextDeal()
     }
 
-    fun setWinnableOnly(on: Boolean) {
+    fun changeWinnableOnly(on: Boolean) {
         winnableOnly = on
         storage.saveWinnableOnly(on)
         if (on) prepareNextDeal() else dealJob?.cancel()
