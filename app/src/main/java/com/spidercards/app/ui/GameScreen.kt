@@ -107,7 +107,7 @@ fun GameScreen(vm: GameViewModel) {
 
         if (showStats) {
             BackHandler { showStats = false }
-            StatsScreen(stats = vm.stats, onClose = { showStats = false })
+            StatsScreen(stats = vm.stats, onClose = { showStats = false }, onReset = vm::resetStats)
         }
     }
 

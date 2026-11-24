@@ -96,6 +96,10 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         apply(Session.new(), countStart = false)
     }
 
+    fun resetStats() {
+        updateStats(Stats())
+    }
+
     fun dismissStuckWarning() {
         stuckDismissedAt = state.moves
     }
