@@ -1,9 +1,17 @@
 package com.spidercards.app.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateIntOffsetAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -48,7 +56,7 @@ private class BoardLayout(
     val landscape = width > height
     val columnWidth = width / (GameState.COLUMN_COUNT + if (landscape) 1 else 0)
     val gap = columnWidth * 0.05f
-    private val maxCardWidth = columnWidth - gap * 2
+    val maxCardWidth = columnWidth - gap * 2
     val top = gap * 2
 
     val cardWidth: Float
@@ -58,17 +66,21 @@ private class BoardLayout(
     init {
         // Room for the tableau, using the biggest card size to reserve the portrait bottom row.
         val available = if (landscape) height - top - gap else height - top - maxCardWidth * ASPECT - gap * 4
-        // The tallest column in card widths, at the ideal overlaps.
+        // The tallest column in card widths, at tight but readable overlaps. Cards only shrink when even
+        // that doesn't fit, and never below MIN_SCALE; past that the overlaps squeeze instead.
         val tallest = state.columns.maxOf { column ->
-            ASPECT + column.dropLast(1).sumOf { (if (it.faceUp) UP else DOWN).toDouble() }.toFloat()
+            ASPECT + column.dropLast(1).sumOf { (if (it.faceUp) FIT_UP else MIN_DOWN).toDouble() }.toFloat()
         }
         cardWidth = (available / tallest).coerceIn(maxCardWidth * MIN_SCALE, maxCardWidth)
         cardHeight = cardWidth * ASPECT
         tableauBottom = if (landscape) height - gap else height - cardHeight - gap * 3
     }
 
-    /** Card tops for each column. Hidden cards are squeezed first, then visible ones if still needed. */
-    val columnY: List<List<Float>> = state.columns.map { column ->
+    /** Card tops for each column. */
+    val columnY: List<List<Float>> = state.columns.map { stackY(it) }
+
+    /** Card tops for a column of cards. Hidden cards are squeezed first, then visible ones if still needed. */
+    fun stackY(column: List<Card>): List<Float> {
         val room = tableauBottom - top - cardHeight
         val hidden = column.dropLast(1).count { !it.faceUp }
         val shown = column.size - 1 - hidden
@@ -77,13 +89,13 @@ private class BoardLayout(
         if (hidden * down + shown * up > room) {
             down = cardWidth * MIN_DOWN
             if (hidden * down + shown * up > room) {
-                up = if (shown > 0) ((room - hidden * down) / shown).coerceAtLeast(cardWidth * 0.08f) else up
+                up = if (shown > 0) ((room - hidden * down) / shown).coerceAtLeast(cardWidth * MIN_UP) else up
             } else {
                 down = if (hidden > 0) ((room - shown * up) / hidden).coerceIn(cardWidth * MIN_DOWN, cardWidth * DOWN) else down
             }
         }
         var y = top
-        column.map { card ->
+        return column.map { card ->
             val cardY = y
             y += if (card.faceUp) up else down
             cardY
@@ -145,37 +157,92 @@ private class BoardLayout(
         const val DOWN = 0.08f
         const val MIN_DOWN = 0.035f
 
-        /** Cards never shrink below this share of their full size, so they stay easy to tap. */
-        const val MIN_SCALE = 0.55f
+        /** Overlap used to decide the card size: the rank is still fully readable. */
+        const val FIT_UP = 0.38f
+
+        /** The tightest overlap ever used. The top of the rank still shows; holding the column shows it all. */
+        const val MIN_UP = 0.22f
+
+        /** Cards never shrink below this share of their full size, so they stay readable and easy to tap. */
+        const val MIN_SCALE = 0.8f
     }
 }
 
-private data class Placement(val card: Card, val x: Float, val y: Float, val z: Float, val locked: Boolean = false)
+private data class Placement(
+    val card: Card,
+    val x: Float,
+    val y: Float,
+    val z: Float,
+    val locked: Boolean = false,
+    val column: Int = -1,
+    val index: Int = -1,
+)
 
-/** Remembers the last position seen, so a fresh deal can send its ten cards out one after another. */
-private class DealTracker {
+private val cardSpring = spring<IntOffset>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+)
+private const val DEAL_STEP_MS = 60L
+private const val DEAL_MS = 200
+private const val COLLECT_MS = 420
+private const val PEEK_MS = 2500L
+
+/** How a card should travel to its new spot, when it isn't a plain move. */
+private sealed interface Flight {
+    /** One of the ten cards of a deal; [order] is its column, so they go out one after another. */
+    data class Deal(val order: Int) : Flight
+
+    /** Part of a completed run: settle at [via] in the column, wait [waitMs], then fly to the foundation. */
+    data class Collect(val via: IntOffset, val waitMs: Long) : Flight
+}
+
+/** Compares each new position with the last, to choreograph deals and completed runs. */
+private class FlightPlanner {
     private var lastState: GameState? = null
-    var delays: Map<Int, Int> = emptyMap()
+    var flights: Map<Int, Flight> = emptyMap()
         private set
 
-    fun update(state: GameState) {
+    fun update(state: GameState, layout: BoardLayout) {
         val last = lastState
         if (last === state) return
-        delays = if (last != null && state.moves == last.moves + 1 &&
-            last.stock.size - state.stock.size == GameState.COLUMN_COUNT
-        ) {
-            val dealt = last.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
-            buildMap {
+        lastState = state
+        if (last == null || state.moves != last.moves + 1) {
+            flights = emptyMap()
+            return
+        }
+        flights = buildMap {
+            if (last.stock.size - state.stock.size == GameState.COLUMN_COUNT) {
+                val dealt = last.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
                 state.columns.forEachIndexed { c, column ->
-                    column.lastOrNull()?.takeIf { it.id in dealt }?.let { put(it.id, c) }
+                    column.lastOrNull()?.takeIf { it.id in dealt }?.let { put(it.id, Flight.Deal(c)) }
                 }
             }
-        } else {
-            emptyMap()
+            for (run in state.foundations.drop(last.foundations.size)) {
+                // The run finished in the column that held its King, or (if the King moved too) an empty one.
+                val king = run.first().id
+                // If the whole run was already in the King's column before, the King itself moved.
+                val column = last.columns.indexOfFirst { col -> col.any { it.id == king } }
+                    .takeIf { c -> c >= 0 && last.columns[c].size - last.columns[c].indexOfFirst { it.id == king } < 13 }
+                    ?: state.columns.indices.firstOrNull { last.columns[it].isEmpty() && state.columns[it].isEmpty() }
+                    ?: continue
+                val base = state.columns[column]
+                val ys = layout.stackY(base + run)
+                run.forEachIndexed { j, card ->
+                    val via = IntOffset(layout.columnX(column).roundToInt(), ys[base.size + j].roundToInt())
+                    // Pause so the finished run is seen, then stream it away from the Ace up.
+                    put(card.id, Flight.Collect(via, COLLECT_PAUSE_MS + (run.lastIndex - j) * COLLECT_STEP_MS))
+                }
+            }
         }
-        lastState = state
+    }
+
+    companion object {
+        const val COLLECT_PAUSE_MS = 350L
+        const val COLLECT_STEP_MS = 55L
     }
 }
+
+private data class Peek(val column: Int, val index: Int, val timed: Boolean)
 
 private data class Drag(val column: Int, val index: Int, val delta: Offset)
 
@@ -183,7 +250,7 @@ private data class Drag(val column: Int, val index: Int, val delta: Offset)
 fun Board(
     state: GameState,
     onMove: (from: Int, index: Int, to: Int) -> Boolean,
-    onTapCard: (column: Int, index: Int) -> Unit,
+    onTapCard: (column: Int, index: Int) -> Boolean,
     onDeal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -197,6 +264,7 @@ fun Board(
         val fontScale = density.fontScale
 
         var drag by remember { mutableStateOf<Drag?>(null) }
+        var peek by remember { mutableStateOf<Peek?>(null) }
         val currentLayout by rememberUpdatedState(layout)
         val currentOnMove by rememberUpdatedState(onMove)
         val currentOnTap by rememberUpdatedState(onTapCard)
@@ -243,13 +311,13 @@ fun Board(
                 var runStart = column.size
                 while (runStart > 0 && Spider.isMovableRun(column, runStart - 1)) runStart--
                 column.forEachIndexed { i, card ->
-                    add(Placement(card, layout.columnX(c), layout.columnY[c][i], 400f + i, locked = i < runStart))
+                    add(Placement(card, layout.columnX(c), layout.columnY[c][i], 400f + i, i < runStart, c, i))
                 }
             }
         }
 
-        val dealTracker = remember { DealTracker() }
-        dealTracker.update(state)
+        val planner = remember { FlightPlanner() }
+        planner.update(state, layout)
 
         val activeDrag = drag
         val draggedIds = activeDrag?.let { d ->
@@ -262,36 +330,73 @@ fun Board(
                 val dx = if (dragging) activeDrag!!.delta.x else 0f
                 val dy = if (dragging) activeDrag!!.delta.y else 0f
                 val target = IntOffset((p.x + dx).roundToInt(), (p.y + dy).roundToInt())
-                val dealOrder = dealTracker.delays[p.card.id]
-                val position by animateIntOffsetAsState(
-                    targetValue = target,
-                    animationSpec = when {
-                        dragging -> snap()
-                        dealOrder != null -> tween(
-                            durationMillis = 200,
-                            delayMillis = dealOrder * 60,
-                            easing = FastOutSlowInEasing,
-                        )
-                        else -> spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        )
-                    },
-                    label = "card",
-                )
+                val flight = planner.flights[p.card.id]
+                val anim = remember { Animatable(target, IntOffset.VectorConverter) }
+                LaunchedEffect(target, flight) {
+                    when (flight) {
+                        is Flight.Deal -> {
+                            delay(flight.order * DEAL_STEP_MS)
+                            anim.animateTo(target, tween(DEAL_MS, easing = FastOutSlowInEasing))
+                        }
+                        is Flight.Collect -> {
+                            anim.animateTo(flight.via, cardSpring)
+                            delay(flight.waitMs)
+                            anim.animateTo(target, tween(COLLECT_MS, easing = FastOutSlowInEasing))
+                        }
+                        null -> if (dragging) anim.snapTo(target) else anim.animateTo(target, cardSpring)
+                    }
+                }
+                val moving = anim.value != target
                 // A dealt card stays face down until it lands.
-                val inFlight = dealOrder != null && position != target
+                val faceDownInFlight = flight is Flight.Deal && moving
                 CardFace(
-                    card = if (inFlight) p.card.copy(faceUp = false) else p.card,
+                    card = if (faceDownInFlight) p.card.copy(faceUp = false) else p.card,
                     locked = p.locked,
                     width = cardWidthDp,
                     fontScale = fontScale,
-                    highlighted = dragging,
+                    highlighted = dragging || (peek?.let { it.column == p.column && it.index == p.index } ?: false),
                     modifier = Modifier
-                        .offset { position }
-                        .zIndex(if (dragging) 1000f + p.z else if (position != target) 900f + p.z else p.z)
+                        .offset { anim.value }
+                        .zIndex(if (dragging) 1000f + p.z else if (moving) 900f + p.z else p.z)
                         .size(cardWidthDp, cardHeightDp),
                 )
+            }
+        }
+
+        // Peek: the face-up cards of one column, spread out side by side at full size.
+        val shownPeek = peek
+        val peekCards = shownPeek?.let { pk ->
+            state.columns.getOrNull(pk.column)?.withIndex()?.filter { it.value.faceUp }
+        }.orEmpty()
+        if (shownPeek != null && peekCards.isNotEmpty()) {
+            val peekWidth = with(density) { layout.maxCardWidth.toDp() }
+            val room = maxWidth - 40.dp - peekWidth
+            val step = if (peekCards.size > 1) minOf(peekWidth * 0.62f, room / (peekCards.size - 1)) else 0.dp
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+                    .zIndex(2500f)
+                    .background(Color(0xE60B2E14), RoundedCornerShape(12.dp))
+                    .padding(10.dp),
+            ) {
+                Box(Modifier.size(step * (peekCards.size - 1) + peekWidth, peekWidth * BoardLayout.ASPECT)) {
+                    peekCards.forEachIndexed { k, iv ->
+                        CardFace(
+                            card = iv.value,
+                            width = peekWidth,
+                            fontScale = fontScale,
+                            highlighted = iv.index == shownPeek.index,
+                            modifier = Modifier.offset(x = step * k).size(peekWidth, peekWidth * BoardLayout.ASPECT),
+                        )
+                    }
+                }
+            }
+        }
+        LaunchedEffect(shownPeek) {
+            if (shownPeek?.timed == true) {
+                delay(PEEK_MS)
+                peek = null
             }
         }
 
@@ -301,18 +406,33 @@ fun Board(
                 .fillMaxSize()
                 .zIndex(2000f)
                 .pointerInput(Unit) {
-                    detectTapGestures { point ->
-                        val l = currentLayout
-                        val hit = l.cardAt(point)
-                        when {
-                            hit != null -> currentOnTap(hit.first, hit.second)
-                            l.isOnStock(point) -> currentOnDeal()
-                        }
-                    }
+                    detectTapGestures(
+                        onPress = {
+                            tryAwaitRelease()
+                            // A peek from holding a card lasts only while the finger is down.
+                            if (peek?.timed == false) peek = null
+                        },
+                        onLongPress = { point ->
+                            currentLayout.cardAt(point)?.let { (c, i) -> peek = Peek(c, i, timed = false) }
+                        },
+                        onTap = { point ->
+                            val l = currentLayout
+                            val hit = l.cardAt(point)
+                            peek = null
+                            when {
+                                // A card with nowhere to go shows its column spread out for a moment instead.
+                                hit != null -> if (!currentOnTap(hit.first, hit.second)) {
+                                    peek = Peek(hit.first, hit.second, timed = true)
+                                }
+                                l.isOnStock(point) -> currentOnDeal()
+                            }
+                        },
+                    )
                 }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { point ->
+                            peek = null
                             val l = currentLayout
                             val hit = l.cardAt(point)
                             drag = if (hit != null && Spider.isMovableRun(l.state.columns[hit.first], hit.second)) {
