@@ -243,7 +243,6 @@ private class FlightPlanner {
 }
 
 private data class Peek(val column: Int, val index: Int, val timed: Boolean)
-}
 
 private data class Drag(val column: Int, val index: Int, val delta: Offset)
 
