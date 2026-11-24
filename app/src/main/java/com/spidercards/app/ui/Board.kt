@@ -34,6 +34,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.zIndex
+import spider.game.Action
 import spider.game.Card
 import spider.game.GameState
 import spider.game.Spider
@@ -253,6 +254,7 @@ fun Board(
     onTapCard: (column: Int, index: Int) -> Boolean,
     onDeal: () -> Unit,
     modifier: Modifier = Modifier,
+    hint: Action? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -274,6 +276,8 @@ fun Board(
         for (c in 0 until GameState.COLUMN_COUNT) {
             EmptySlot(
                 cardWidthDp,
+                highlighted = hintMove?.to == c && state.columns[c].isEmpty(),
+                modifier =
                 Modifier.offset { IntOffset(layout.columnX(c).roundToInt(), layout.top.roundToInt()) }
                     .size(cardWidthDp, cardHeightDp),
             )
@@ -316,6 +320,17 @@ fun Board(
             }
         }
 
+        // Cards (and possibly an empty column) to outline for the current hint.
+        val hintMove = (hint as? Action.MoveCards)?.move
+        val hintedIds: Set<Int> = when (hint) {
+            is Action.MoveCards -> buildSet {
+                state.columns.getOrNull(hint.move.from)?.drop(hint.move.index)?.forEach { add(it.id) }
+                state.columns.getOrNull(hint.move.to)?.lastOrNull()?.let { add(it.id) }
+            }
+            Action.Deal -> state.stock.takeLast(GameState.COLUMN_COUNT).map { it.id }.toSet()
+            null -> emptySet()
+        }
+
         val planner = remember { FlightPlanner() }
         planner.update(state, layout)
 
@@ -354,7 +369,8 @@ fun Board(
                     locked = p.locked,
                     width = cardWidthDp,
                     fontScale = fontScale,
-                    highlighted = dragging || (peek?.let { it.column == p.column && it.index == p.index } ?: false),
+                    highlighted = dragging || p.card.id in hintedIds ||
+                        (peek?.let { it.column == p.column && it.index == p.index } ?: false),
                     modifier = Modifier
                         .offset { anim.value }
                         .zIndex(if (dragging) 1000f + p.z else if (moving) 900f + p.z else p.z)
